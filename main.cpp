@@ -9,6 +9,7 @@ int main(int argc, char *argv[])
 
     QtScrollAccidentBlocker scAcBl;
     qApp->installEventFilter(&scAcBl);
+    scAcBl.enable();
 
     MainWindow w;
     w.show();

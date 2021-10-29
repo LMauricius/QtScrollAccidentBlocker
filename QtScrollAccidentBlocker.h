@@ -17,6 +17,12 @@ public:
     // Finds the first scrollable widget in w's ancestry (including w) or returns nullptr if no scrollable widget can be found
     QWidget* getFirstScrollableInAncestry(QWidget* w, QPoint angleDelta);
 
+    // Call this to enable event redirection. Returns whether successful
+    bool enable();
+
+    // Returns whether successful
+    bool disable();
+
 signals:
 
 protected:

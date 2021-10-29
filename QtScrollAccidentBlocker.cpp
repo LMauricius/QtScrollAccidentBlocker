@@ -98,6 +98,18 @@ bool QtScrollAccidentBlocker::eventFilter(QObject *watched, QEvent *event)
     return false;
 }
 
+bool QtScrollAccidentBlocker::enable()
+{
+    mEnabled = true;
+    return true;
+}
+
+bool QtScrollAccidentBlocker::disable()
+{
+    mEnabled = false;
+    return true;
+}
+
 bool QtScrollAccidentBlocker::isWidgetScrollable(const QWidget* w, QPoint angleDelta)
 {
     if (
