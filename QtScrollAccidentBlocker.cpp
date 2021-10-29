@@ -14,20 +14,20 @@
 
 QtScrollAccidentBlocker::QtScrollAccidentBlocker(QObject *parent):
     QObject(parent),
-    mScrollActiveWidget(nullptr)
+    mScrollActiveWidget(nullptr),
+    mEnabled(false)
 {
 
 }
 
 bool QtScrollAccidentBlocker::eventFilter(QObject *watched, QEvent *event)
 {
-    if (watched->isWidgetType())
+    if (mEnabled && watched->isWidgetType())
     {
         QWidget *w = (QWidget*)watched;
 
         switch (event->type())
         {
-        //case QEvent::Type::MouseEnter:
         case QEvent::Type::MouseMove:
         case QEvent::Type::MouseButtonPress:
         case QEvent::Type::MouseButtonDblClick:
@@ -35,81 +35,63 @@ bool QtScrollAccidentBlocker::eventFilter(QObject *watched, QEvent *event)
             // This ensures that the next scroll event will be propagated to the widget under cursor
             // On the next scroll event the receiver object should be set as the scroll-active widget
             resetScrollActive();
-            qDebug() << (QString("reset scrollA %1\n").arg((size_t)mScrollActiveWidget));
             break;
         case QEvent::Type::Wheel:
         {
             QWheelEvent *we = (QWheelEvent*) event;
 
-            // Allow scrolling in another widget if current scroll-active widget isn't scrollable in the delta's direction anymore
-            // (for example, allow scrolling parent scroll-area if the current one reached its end)
-            if (mScrollActiveWidget && !isWidgetScrollable(mScrollActiveWidget, we->angleDelta()))
+            // In case the receiver widget is a non-scrollable widget inside a scrollable area, find first scrollable parent
+            if (QWidget *scrollable = getFirstScrollableInAncestry(w, we->angleDelta()))
             {
-                resetScrollActive();
-            }
-
-            // Don't filter events for ScrollBars inside the scroll-active widget,
-            // they are usually redirected from the scroll area.
-            // If not, the user definitely scrolled on them on purpose,
-            // as there is no way to accidentally scroll into a scrollbar from its parent scrollArea
-            // (unless a really bad ui layout is used)
-            if (true || !dynamic_cast<const QScrollBar*>(w) || mScrollActiveWidget->isAncestorOf(w))
-            {
-                // In case the receiver widget is a non-scrollable widget inside a scrollable area, find first scrollable parent
-                if (QWidget *scrollW = getScrollableParent(w, we->angleDelta()))
+                // Redirect "scroll owner" from ScrollBar to owning ScrollArea
+                if (dynamic_cast<QScrollBar*>(scrollable))
                 {
-                    // Redirect scroll-active from ScrollBar to owning ScrollArea
-                    if (QAbstractScrollArea *ownerW = dynamic_cast<QAbstractScrollArea*>(getScrollableParent(w->parentWidget(), we->angleDelta())))
+                    QWidget *parentScrollable = getFirstScrollableInAncestry(scrollable->parentWidget(), we->angleDelta());
+                    if (QAbstractScrollArea *parentScrollArea = dynamic_cast<QAbstractScrollArea*>(parentScrollable))
                     {
-                        if (scrollW == ownerW->horizontalScrollBar() || scrollW == ownerW->verticalScrollBar())
+                        if (scrollable == parentScrollArea->horizontalScrollBar() || scrollable == parentScrollArea->verticalScrollBar())
                         {
-                            scrollW = ownerW;
+                            scrollable = parentScrollArea;
                         }
                     }
+                }
 
-                    // Change the scroll-active widget to the receiver only if the scroll-active variable has been reset
-                    // (i.e. prevent changing the scroll-active variable unless explicitly required)
-                    if (mScrollActiveWidget == nullptr)
+                // Change the scroll-active widget to the receiver only if the scroll-active variable has been reset
+                // (i.e. prevent changing the scroll-active variable unless explicitly required)
+                if (mScrollActiveWidget == nullptr)
+                {
+                    mScrollActiveWidget = scrollable;
+
+                    // In case the scroll-active widget is deleted, forget about it
+                    mScrollActiveWidget->connect(
+                        mScrollActiveWidget, SIGNAL(destroyed(QObject*)),
+                        this, SLOT(resetScrollActive())
+                    );
+                }
+                else
+                {
+                    // If the receiver isn't the scroll-active widget, redirect the event to the scroll-active one
+                    // DON'T DO IT if the receiver is parent of the previous scroll-active ScrollArea.
+                    // (This happens when we reached the end of the scroll area, and scrolling continues in the parent scrollArea)
+                    if (scrollable != mScrollActiveWidget &&
+                        !(
+                            dynamic_cast<QAbstractScrollArea*>(mScrollActiveWidget) &&
+                            scrollable->isAncestorOf(mScrollActiveWidget)
+                        )
+                    )
                     {
-                        resetScrollActive();
-
-                        mScrollActiveWidget = scrollW;
-
-                        // In case the scroll-active widget is deleted, forget about it
-                        mScrollActiveWidget->connect(
-                            mScrollActiveWidget, SIGNAL(destroyed(QObject*)),
-                            this, SLOT(resetScrollActive())
-                        );
-                        //qDebug() << QString("changed cur %1  scrollA %2\n").arg((size_t)scrollW).arg((size_t)mScrollActiveWidget) << we->angleDelta();
+                        QApplication::instance()->sendEvent(mScrollActiveWidget, event);
+                        return true;
                     }
                     else
                     {
-                        // If the receiver isn't the scroll-active widget, redirect the event to the scroll-active one
-                        // DON'T DO IT if the receiver is parent of the prev scroll-active ScrollArea.
-                        // (This happens when we reached the end of the scroll area, and scrolling continues in the parent scrollArea)
-                        if (scrollW != mScrollActiveWidget &&
-                            !(
-                                dynamic_cast<QAbstractScrollArea*>(mScrollActiveWidget) &&
-                                scrollW->isAncestorOf(mScrollActiveWidget)
-                            )
-                        )
-                        {
-                            //qDebug() << QString("stopped cur %1  scrollA %2 (%3 %4)\n").arg((size_t)scrollW).arg((size_t)mScrollActiveWidget) << we->angleDelta();
-                            QApplication::instance()->sendEvent(mScrollActiveWidget, event);
-                            return true;
-                        }
-                        else
-                        {
-                            //qDebug() << QString("filtered cur %1  scrollA %2 (%3 %4)\n").arg((size_t)scrollW).arg((size_t)mScrollActiveWidget) << we->angleDelta();
-                        }
+                        // Proceed normally
                     }
-
                 }
+
             }
             break;
         }
-        case QEvent::Type::ScrollPrepare:// This might be something of interest
-            break;
         }
     }
 
@@ -118,12 +100,8 @@ bool QtScrollAccidentBlocker::eventFilter(QObject *watched, QEvent *event)
 
 bool QtScrollAccidentBlocker::isWidgetScrollable(const QWidget* w, QPoint angleDelta)
 {
-    if (auto s=dynamic_cast<const QAbstractSlider*>(w)// includes scrollbars
-    ) {
-        int delta = (s->orientation() == Qt::Vertical)? angleDelta.y() : angleDelta.x();
-        return (delta >= 0 && s->sliderPosition() > s->minimum()) || (delta <= 0 && s->sliderPosition() < s->maximum());
-    }
-    else if (
+    if (
+        dynamic_cast<const QAbstractSlider*>(w) ||
         dynamic_cast<const QComboBox*>(w) ||
         dynamic_cast<const QTabBar*>(w) ||
         dynamic_cast<const QAbstractSpinBox*>(w) ||
@@ -139,7 +117,7 @@ bool QtScrollAccidentBlocker::isWidgetScrollable(const QWidget* w, QPoint angleD
     return false;
 }
 
-QWidget* QtScrollAccidentBlocker::getScrollableParent(QWidget* w, QPoint angleDelta)
+QWidget* QtScrollAccidentBlocker::getFirstScrollableInAncestry(QWidget* w, QPoint angleDelta)
 {
     while (w)
     {
